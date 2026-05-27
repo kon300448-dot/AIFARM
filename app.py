@@ -16,10 +16,13 @@ import json
 
 # ... โค้ดส่วนบน (เคลียร์ Cache) เหมือนเดิม ...
 
-# 3. เชื่อมต่อ Firebase แบบปลอดภัยผ่าน Streamlit Secrets
+# 3. เชื่อมต่อ Firebase
 if not firebase_admin._apps:
-    # ดึงข้อมูลจากตู้เซฟ Streamlit มาแปลงเป็น Dictionary
     key_dict = dict(st.secrets["firebase"])
+    
+    # --- เพิ่มบรรทัดนี้เข้าไปครับ (สำคัญมาก!) ---
+    key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+    # ----------------------------------------
     
     cred = credentials.Certificate(key_dict)
     firebase_admin.initialize_app(cred, {
