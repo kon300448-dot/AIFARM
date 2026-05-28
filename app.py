@@ -312,16 +312,18 @@ if selected_mode == "manual":
     with c_btn1:
         if st.button("เปิดปั๊มน้ำ", type="primary", use_container_width=True):
             try:
-                root_ref.child("last_command_request").update(make_command(1))
-                st.toast("ส่งคำสั่งเปิดปั๊มน้ำแล้ว")
+                # แก้จาก root_ref... เป็นการยิงตรงไปที่ Node ของ STM32
+                db.reference("devices/stm32f410/control/pump").set(make_command(1))
+                st.toast("ส่งคำสั่งเปิดปั๊มน้ำไปที่บอร์ด STM32 แล้ว")
             except Exception as e:
                 st.error(f"ส่งคำสั่งไม่สำเร็จ: {e}")
 
     with c_btn2:
         if st.button("ปิดปั๊มน้ำ", use_container_width=True):
             try:
-                root_ref.child("last_command_request").update(make_command(0))
-                st.toast("ส่งคำสั่งปิดปั๊มน้ำแล้ว")
+                # แก้จาก root_ref... เป็นการยิงตรงไปที่ Node ของ STM32
+                db.reference("devices/stm32f410/control/pump").set(make_command(0))
+                st.toast("ส่งคำสั่งปิดปั๊มน้ำไปที่บอร์ด STM32 แล้ว")
             except Exception as e:
                 st.error(f"ส่งคำสั่งไม่สำเร็จ: {e}")
 
