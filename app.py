@@ -4,7 +4,7 @@ from firebase_admin import credentials, db
 from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 
 # =========================================================
@@ -14,9 +14,11 @@ from datetime import datetime
 DATABASE_URL = "https://aifarm-cd315-default-rtdb.asia-southeast1.firebasedatabase.app/"
 DEVICE_PATH = "AIFARM01"
 
-REFRESH_MS = 2000          # refresh หน้าเว็บทุก 2 วินาที
-OFFLINE_SEC = 90           # ถ้าข้อมูลเก่ากว่า 90 วิ ถือว่า offline
-PUMP_MAX_SEC = 60          # ส่งไปให้ STM32 ใช้เป็น max runtime ได้
+REFRESH_MS = 2000
+OFFLINE_SEC = 90
+PUMP_MAX_SEC = 60
+
+TH_TZ = timezone(timedelta(hours=7))
 
 
 # =========================================================
@@ -38,10 +40,6 @@ st_autorefresh(interval=REFRESH_MS, key="auto_refresh")
 
 @st.cache_resource
 def init_firebase():
-    """
-    Init Firebase แค่ครั้งเดียว
-    ห้าม delete_app ทุก rerun เพราะจะทำให้ช้าและเสี่ยง error
-    """
     if not firebase_admin._apps:
         key_dict = dict(st.secrets["firebase"])
         key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
@@ -62,10 +60,6 @@ root_ref = init_firebase()
 # =========================================================
 
 def pick(data, *keys, default="--"):
-    """
-    ดึงค่าจาก dict โดยรองรับหลายชื่อ key
-    เช่น air_humi / air_humid / air_humidity
-    """
     if not isinstance(data, dict):
         return default
 
@@ -85,9 +79,6 @@ def to_float(value):
 
 
 def fmt(value, unit="", digits=1):
-    """
-    format ค่า sensor ให้ไม่พังถ้าเป็น None หรือไม่มีข้อมูล
-    """
     if value == "--" or value is None:
         return "--"
 
@@ -98,12 +89,9 @@ def fmt(value, unit="", digits=1):
         return f"{value} {unit}".strip()
 
 
-def get_epoch_from_current(current):
-    """
-    รองรับ timestamp หลายชื่อ
-    """
+def get_epoch_from_data(data):
     ts = pick(
-        current,
+        data,
         "ts",
         "timestamp",
         "unix",
@@ -116,7 +104,6 @@ def get_epoch_from_current(current):
     try:
         ts = int(float(ts))
 
-        # ถ้าเป็น millisecond ให้แปลงเป็น second
         if ts > 10_000_000_000:
             ts = ts // 1000
 
@@ -125,26 +112,65 @@ def get_epoch_from_current(current):
         return None
 
 
-def make_command(pump_value):
+def now_th_hhmm():
+    return datetime.now(TH_TZ).strftime("%H:%M")
+
+
+def now_th_text():
+    return datetime.now(TH_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def make_command(action):
     """
-    สร้าง command ที่มี request_id กันบอร์ดแยกคำสั่งเก่า/ใหม่ได้
+    action = "on" หรือ "off"
+
+    หมายเหตุ:
+    - duration_sec ของ off ใส่ 1 ไว้เพื่อไม่ให้ backend เดิมที่บังคับ 1-999 พัง
+    - แต่ backend ที่ถูกต้องควรดู action/force_off เป็นหลัก
     """
-    now = int(time.time())
+    now_ms = int(time.time() * 1000)
+    now_sec = now_ms // 1000
+
+    if action == "on":
+        pump_value = 1
+        duration = PUMP_MAX_SEC
+        force_off = False
+    elif action == "off":
+        pump_value = 0
+        duration = 1
+        force_off = True
+    else:
+        raise ValueError("action ต้องเป็น on หรือ off เท่านั้น")
 
     return {
-        "pump": int(pump_value),
+        "id": f"manual_{action}_{now_ms}",
+        "command_type": "manual_relay",
         "source": "dashboard",
-        "ts": now,
-        "request_id": f"pump_{int(pump_value)}_{now}",
-        "max_duration_sec": PUMP_MAX_SEC
+
+        # คำสั่งหลัก
+        "relay": 1,
+        "device": "pump",
+        "action": action,
+        "pump": pump_value,
+        "force_off": force_off,
+
+        # สำหรับ backend/scheduler เดิม
+        "time": now_th_hhmm(),
+        "duration_sec": duration,
+
+        # สถานะประมวลผล
+        "backend_processed": False,
+        "backend_processed_ts": None,
+        "backend_status": "waiting",
+
+        # เวลา
+        "ts": now_sec,
+        "ts_ms": now_ms,
+        "created_at_th": now_th_text()
     }
 
 
 def load_history_dataframe(history_data):
-    """
-    แปลง AIFARM01/history เป็น DataFrame สำหรับทำกราฟ
-    รองรับ history ที่เป็น dict
-    """
     if not isinstance(history_data, dict) or len(history_data) == 0:
         return pd.DataFrame()
 
@@ -154,14 +180,12 @@ def load_history_dataframe(history_data):
         if not isinstance(item, dict):
             continue
 
-        ts = get_epoch_from_current(item)
+        ts = get_epoch_from_data(item)
 
-        # ถ้าไม่มี ts ลองใช้ key เป็นเวลา
         dt = None
         if ts:
             dt = datetime.fromtimestamp(ts)
         else:
-            # รองรับ key แนว 2026-05-28_12-30-00
             try:
                 safe_key = str(key).replace("_", " ")
                 dt = pd.to_datetime(safe_key, errors="coerce")
@@ -197,15 +221,29 @@ def load_history_dataframe(history_data):
 
 
 def status_badge(label, value):
-    """
-    แสดงสถานะอุปกรณ์แบบอ่านง่าย
-    """
-    if str(value) in ["1", "ON", "on", "true", "True"]:
+    value_str = str(value)
+
+    if value_str in ["1", "ON", "on", "true", "True"]:
         st.success(f"{label}: ON")
-    elif str(value) in ["0", "OFF", "off", "false", "False"]:
+    elif value_str in ["0", "OFF", "off", "false", "False"]:
         st.error(f"{label}: OFF")
     else:
         st.info(f"{label}: {value}")
+
+
+def backend_status_box(cmd):
+    processed = cmd.get("backend_processed", None)
+    status = cmd.get("backend_status", None)
+
+    if processed is True:
+        st.success("backend: Processed")
+    elif processed is False:
+        st.warning("backend: Waiting")
+    else:
+        st.info("backend: N/A")
+
+    if status:
+        st.caption(f"status: {status}")
 
 
 # =========================================================
@@ -213,16 +251,15 @@ def status_badge(label, value):
 # =========================================================
 
 try:
-    # โหลดข้อมูลทั้งหมดจาก AIFARM01 เหมือนเดิม
     all_data = root_ref.get() or {}
 except Exception as e:
     st.error(f"Firebase read error: {e}")
     st.stop()
 
 current = all_data.get("current", {}) if isinstance(all_data, dict) else {}
-# ดึงสถานะคำสั่งจากกล่อง Backend (last_command_request)
 cmd = all_data.get("last_command_request", {}) if isinstance(all_data, dict) else {}
 history = all_data.get("history", {}) if isinstance(all_data, dict) else {}
+relay_state = all_data.get("relay_state", {}) if isinstance(all_data, dict) else {}
 
 db_mode = all_data.get("control_mode", "auto")
 if db_mode not in ["auto", "manual"]:
@@ -245,7 +282,7 @@ if readable_string:
 # ONLINE / OFFLINE STATUS
 # =========================================================
 
-last_ts = get_epoch_from_current(current)
+last_ts = get_epoch_from_data(current)
 now_ts = int(time.time())
 
 top1, top2, top3, top4 = st.columns(4)
@@ -255,7 +292,7 @@ with top1:
         age = now_ts - last_ts
 
         if age <= OFFLINE_SEC:
-            st.success(f"Online")
+            st.success("Online")
             st.caption(f"ข้อมูลล่าสุด {age} วินาทีที่แล้ว")
         else:
             st.error("Offline / ข้อมูลค้าง")
@@ -297,7 +334,6 @@ selected_mode = st.radio(
     horizontal=True
 )
 
-# เขียน Firebase เฉพาะตอน mode เปลี่ยนจริง
 if selected_mode != db_mode:
     try:
         root_ref.child("control_mode").set(selected_mode)
@@ -307,32 +343,32 @@ if selected_mode != db_mode:
         st.error(f"เปลี่ยนโหมดไม่สำเร็จ: {e}")
 
 if selected_mode == "manual":
-    st.warning("ตอนนี้ Manual Mode: AI และ Schedule ควรถูกพักฝั่ง STM32 ด้วย")
+    st.warning("Manual Mode: ฝั่ง backend/STM32 ต้องหยุด AI และ Schedule เองด้วย")
 
     c_btn1, c_btn2, c_btn3 = st.columns([1, 1, 2])
 
     with c_btn1:
         if st.button("เปิดปั๊มน้ำ", type="primary", use_container_width=True):
             try:
-                # ส่งคำสั่งไปที่กล่องรับจดหมายของ Backend
-                root_ref.child("last_command_request").update(make_command(1))
-                st.toast("ส่งคำสั่งเปิดปั๊มน้ำไปที่ระบบ Backend แล้ว")
+                root_ref.child("last_command_request").set(make_command("on"))
+                st.toast("ส่งคำสั่งเปิดปั๊มน้ำแล้ว")
+                st.rerun()
             except Exception as e:
                 st.error(f"ส่งคำสั่งไม่สำเร็จ: {e}")
 
     with c_btn2:
         if st.button("ปิดปั๊มน้ำ", use_container_width=True):
             try:
-                # ส่งคำสั่งไปที่กล่องรับจดหมายของ Backend
-                root_ref.child("last_command_request").update(make_command(0))
-                st.toast("ส่งคำสั่งปิดปั๊มน้ำไปที่ระบบ Backend แล้ว")
+                root_ref.child("last_command_request").set(make_command("off"))
+                st.toast("ส่งคำสั่งปิดปั๊มน้ำแล้ว")
+                st.rerun()
             except Exception as e:
                 st.error(f"ส่งคำสั่งไม่สำเร็จ: {e}")
 
     with c_btn3:
         st.caption(
-            f"คำสั่ง manual จะส่ง request_id และ max_duration_sec={PUMP_MAX_SEC} "
-            "เพื่อให้ STM32 กันคำสั่งซ้ำและกันปั๊มค้าง"
+            "คำสั่ง OFF ตอนนี้ส่ง action='off' และ force_off=True แล้ว "
+            "backend ต้องอ่านค่านี้เพื่อสั่งปิดจริง"
         )
 
 else:
@@ -413,17 +449,40 @@ st.markdown("### สถานะอุปกรณ์ควบคุม")
 
 s1, s2, s3, s4 = st.columns(4)
 
+# สถานะจริง ควรมาจาก AIFARM01/relay_state
+real_fan = pick(relay_state, "fan", default="N/A")
+real_pump = pick(relay_state, "pump", default="N/A")
+
+# fallback ถ้ายังไม่มี relay_state ให้โชว์จาก command แต่ระบุว่าเป็นคำสั่งล่าสุด
+if real_fan == "N/A":
+    real_fan = pick(cmd, "fan", default="N/A")
+
+if real_pump == "N/A":
+    real_pump = pick(cmd, "pump", default="N/A")
+
 with s1:
-    status_badge("พัดลม", pick(cmd, "fan", default="N/A"))
+    status_badge("พัดลม", real_fan)
 
 with s2:
-    status_badge("ปั๊มน้ำ", pick(cmd, "pump", default="N/A"))
+    status_badge("ปั๊มน้ำ", real_pump)
 
 with s3:
-    st.info(f"request_id: {pick(cmd, 'request_id', default='N/A')}")
+    backend_status_box(cmd)
 
 with s4:
-    st.info(f"source: {pick(cmd, 'source', default='N/A')}")
+    st.info(f"action: {pick(cmd, 'action', default='N/A')}")
+    st.caption(f"duration: {pick(cmd, 'duration_sec', default='N/A')}s")
+
+cmd_id = pick(cmd, "id", default="N/A")
+cmd_source = pick(cmd, "source", default="N/A")
+cmd_created = pick(cmd, "created_at_th", default="N/A")
+
+st.caption(f"คำสั่งล่าสุด: {cmd_id} | source: {cmd_source} | created: {cmd_created}")
+
+relay_updated_ts = get_epoch_from_data(relay_state)
+if relay_updated_ts:
+    relay_age = now_ts - relay_updated_ts
+    st.caption(f"relay_state อัปเดตล่าสุด {relay_age} วินาทีที่แล้ว")
 
 current_text = all_data.get("current_text", "OK")
 st.caption(f"ข้อความระบบ: {current_text}")
@@ -480,9 +539,10 @@ else:
 st.write("---")
 st.markdown("### Raw Data / Debug")
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Current",
     "Command",
+    "Relay State",
     "History",
     "All Data"
 ])
@@ -494,9 +554,12 @@ with tab2:
     st.json(cmd)
 
 with tab3:
+    st.json(relay_state)
+
+with tab4:
     if isinstance(history, dict):
         st.write(f"จำนวน record ใน history: {len(history)}")
     st.json(history)
 
-with tab4:
+with tab5:
     st.json(all_data)
