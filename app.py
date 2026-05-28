@@ -63,7 +63,7 @@ root_ref = init_firebase()
 
 def pick(data, *keys, default="--"):
     """
-    Дึงค่าจาก dict โดยรองรับหลายชื่อ key
+    ดึงค่าจาก dict โดยรองรับหลายชื่อ key
     เช่น air_humi / air_humid / air_humidity
     """
     if not isinstance(data, dict):
@@ -209,32 +209,24 @@ def status_badge(label, value):
 
 
 # =========================================================
-# READ FIREBASE (จุดที่แก้ไขหลักอยู่ตรงนี้ครับ)
+# READ FIREBASE
 # =========================================================
 
 try:
+    # โหลดข้อมูลทั้งหมดจาก AIFARM01 เหมือนเดิม
     all_data = root_ref.get() or {}
-    # วิ่งไปดึงข้อมูลที่โฟลเดอร์ควบคุมของบอร์ด STM32 โดยตรง
-    stm32_control = db.reference("devices/stm32f410/control").get() or {}
 except Exception as e:
     st.error(f"Firebase read error: {e}")
     st.stop()
 
 current = all_data.get("current", {}) if isinstance(all_data, dict) else {}
+# ดึงสถานะคำสั่งจากกล่อง Backend (last_command_request)
+cmd = all_data.get("last_command_request", {}) if isinstance(all_data, dict) else {}
 history = all_data.get("history", {}) if isinstance(all_data, dict) else {}
 
 db_mode = all_data.get("control_mode", "auto")
 if db_mode not in ["auto", "manual"]:
     db_mode = "auto"
-
-# ประกอบร่างข้อมูลสถานะอุปกรณ์ (cmd) จากโฟลเดอร์จริงของบอร์ด
-pump_data = stm32_control.get("pump", {}) if isinstance(stm32_control, dict) else {}
-cmd = {
-    "pump": pump_data.get("pump", "N/A"),
-    "request_id": pump_data.get("request_id", "N/A"),
-    "source": pump_data.get("source", "N/A"),
-    "fan": stm32_control.get("fan", "N/A")
-}
 
 
 # =========================================================
@@ -322,16 +314,18 @@ if selected_mode == "manual":
     with c_btn1:
         if st.button("เปิดปั๊มน้ำ", type="primary", use_container_width=True):
             try:
-                db.reference("devices/stm32f410/control/pump").set(make_command(1))
-                st.toast("ส่งคำสั่งเปิดปั๊มน้ำไปที่บอร์ด STM32 แล้ว")
+                # ส่งคำสั่งไปที่กล่องรับจดหมายของ Backend
+                root_ref.child("last_command_request").update(make_command(1))
+                st.toast("ส่งคำสั่งเปิดปั๊มน้ำไปที่ระบบ Backend แล้ว")
             except Exception as e:
                 st.error(f"ส่งคำสั่งไม่สำเร็จ: {e}")
 
     with c_btn2:
         if st.button("ปิดปั๊มน้ำ", use_container_width=True):
             try:
-                db.reference("devices/stm32f410/control/pump").set(make_command(0))
-                st.toast("ส่งคำสั่งปิดปั๊มน้ำไปที่บอร์ด STM32 แล้ว")
+                # ส่งคำสั่งไปที่กล่องรับจดหมายของ Backend
+                root_ref.child("last_command_request").update(make_command(0))
+                st.toast("ส่งคำสั่งปิดปั๊มน้ำไปที่ระบบ Backend แล้ว")
             except Exception as e:
                 st.error(f"ส่งคำสั่งไม่สำเร็จ: {e}")
 
