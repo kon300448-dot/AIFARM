@@ -45,21 +45,36 @@ while True:
                 current = all_data.get('current', {})
                 cmd = all_data.get('last_command_request', {})
 
-                # --- โซนที่ 1: ค่าเซนเซอร์หน้างาน (5 ค่า) ---
+                # --- โซนที่ 1: ค่าเซนเซอร์หน้างาน (แบ่ง 2 แถว) ---
                 st.markdown("### 🌡️ สภาพแวดล้อมปัจจุบัน (จากบอร์ด STM32)")
-                col1, col2, col3, col4, col5 = st.columns(5)
                 
+                # แถวที่ 1.1: อุณหภูมิและความชื้น (4 ค่า)
+                st.markdown("##### 🌤️ สภาพอากาศและความชื้นดิน")
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric(label="อุณหภูมิอากาศ", value=f"{current.get('air_temp', '--')} °C")
                 with col2:
                     st.metric(label="ความชื้นอากาศ", value=f"{current.get('air_humid', '--')} %")
                 with col3:
-                    st.metric(label="ความชื้นดิน", value=f"{current.get('soil_humid', '--')} %")
+                    st.metric(label="อุณหภูมิดิน", value=f"{current.get('soil_temp', '--')} °C")
                 with col4:
-                    st.metric(label="ค่า EC", value=f"{current.get('EC', current.get('ec', '--'))}") 
-                with col5:
-                    st.metric(label="ค่า pH", value=f"{current.get('ph', '--')}")
+                    st.metric(label="ความชื้นดิน", value=f"{current.get('soil_humid', '--')} %")
 
+                st.write("") # เว้นบรรทัดนิดนึงให้ดูสบายตา
+
+                # แถวที่ 1.2: คุณภาพดินและธาตุอาหาร (5 ค่า)
+                st.markdown("##### 🧪 คุณภาพและธาตุอาหารในดิน")
+                col_ec, col_ph, col_n, col_p, col_k = st.columns(5)
+                with col_ec:
+                    st.metric(label="ค่า EC", value=f"{current.get('EC', current.get('ec', '--'))}") 
+                with col_ph:
+                    st.metric(label="ค่า pH", value=f"{current.get('ph', '--')}")
+                with col_n:
+                    st.metric(label="ไนโตรเจน (N)", value=f"{current.get('n', current.get('N', '--'))} mg/kg")
+                with col_p:
+                    st.metric(label="ฟอสฟอรัส (P)", value=f"{current.get('p', current.get('P', '--'))} mg/kg")
+                with col_k:
+                    st.metric(label="โพแทสเซียม (K)", value=f"{current.get('k', current.get('K', '--'))} mg/kg")
                 # --- โซนที่ 1.5: ข้อมูลพยากรณ์อากาศ (2 ค่า) ---
                 st.markdown("### ☁️ ข้อมูลพยากรณ์อากาศ (API กรมอุตุฯ)")
                 col6, col7, _ = st.columns([1, 1, 3])
