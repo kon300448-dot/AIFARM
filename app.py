@@ -424,7 +424,8 @@ st.caption("ตั้งเวลาส่งเข้า Queue เพื่อ�
 t_col1, t_col2, t_col3, t_col4 = st.columns([1, 1, 1, 1])
 
 with t_col1:
-    schedule_time = st.time_input("เวลาเปิดปั๊มน้ำ")
+    # เติม step=60 เพื่อให้ปรับเวลาได้ละเอียดทีละ 1 นาที
+    schedule_time = st.time_input("เวลาเปิดปั๊มน้ำ", step=60)
 
 with t_col2:
     duration_sec = st.number_input("ระยะเวลา (วินาที)", min_value=1, max_value=999, value=120)
