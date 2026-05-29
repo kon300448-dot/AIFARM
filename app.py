@@ -18,7 +18,7 @@ REFRESH_MS = 2000
 OFFLINE_SEC = 90
 PUMP_MAX_SEC = 60
 
-# --- เพิ่ม Config ใหม่สำหรับ Backend V9 (Command Queue) ---
+# --- Config สำหรับ Backend V9 (Command Queue) ---
 USE_COMMAND_QUEUE = True
 
 TH_TZ = timezone(timedelta(hours=7))
@@ -125,11 +125,7 @@ def now_th_text():
 
 def make_command(action):
     """
-    action = "on" หรือ "off"
-
-    หมายเหตุ:
-    - duration_sec ของ off ใส่ 1 ไว้เพื่อไม่ให้ backend เดิมที่บังคับ 1-999 พัง
-    - แต่ backend ที่ถูกต้องควรดู action/force_off เป็นหลัก
+    สำหรับคำสั่ง Manual on/off (ใช้โครงสร้างเดิม)
     """
     now_ms = int(time.time() * 1000)
     now_sec = now_ms // 1000
@@ -149,24 +145,41 @@ def make_command(action):
         "id": f"manual_{action}_{now_ms}",
         "command_type": "manual_relay",
         "source": "dashboard",
-
-        # คำสั่งหลัก
         "relay": 1,
         "device": "pump",
         "action": action,
         "pump": pump_value,
         "force_off": force_off,
-
-        # สำหรับ backend/scheduler เดิม
         "time": now_th_hhmm(),
         "duration_sec": duration,
-
-        # สถานะประมวลผล
         "backend_processed": False,
         "backend_processed_ts": None,
         "backend_status": "waiting",
+        "ts": now_sec,
+        "ts_ms": now_ms,
+        "created_at_th": now_th_text()
+    }
 
-        # เวลา
+
+def make_schedule_command(hhmm, duration_sec, relay):
+    """
+    สำหรับคำสั่งสร้างตารางเวลา (Schedule WT)
+    """
+    now_ms = int(time.time() * 1000)
+    now_sec = now_ms // 1000
+    safe_hhmm = hhmm.replace(":", "")
+    
+    return {
+        "id": f"schedule_{relay}_{safe_hhmm}_{now_ms}",
+        "command_type": "schedule_relay",
+        "source": "dashboard",
+        "relay": int(relay),
+        "device": "pump",
+        "time": hhmm,
+        "duration_sec": int(duration_sec),
+        "backend_processed": False,
+        "backend_processed_ts": None,
+        "backend_status": "waiting",
         "ts": now_sec,
         "ts_ms": now_ms,
         "created_at_th": now_th_text()
@@ -264,7 +277,7 @@ cmd = all_data.get("last_command_request", {}) if isinstance(all_data, dict) els
 history = all_data.get("history", {}) if isinstance(all_data, dict) else {}
 relay_state = all_data.get("relay_state", {}) if isinstance(all_data, dict) else {}
 
-# --- เพิ่มการดึง path ใหม่สำหรับ Backend V9 ---
+# ดึง path Queue สำหรับ Backend V9
 command_queue = all_data.get("command_queue", {}) if isinstance(all_data, dict) else {}
 last_command_sent = all_data.get("last_command_sent", {}) if isinstance(all_data, dict) else {}
 last_command_ack = all_data.get("last_command_ack", {}) if isinstance(all_data, dict) else {}
@@ -394,8 +407,7 @@ if selected_mode == "manual":
         queue_status_text = "ใช้งาน Command Queue (Push)" if USE_COMMAND_QUEUE else "ใช้งานแบบเดิม (Set: last_command_request)"
         st.caption(
             f"ระบบ: {queue_status_text} | "
-            "คำสั่ง OFF ตอนนี้ส่ง action='off' และ force_off=True แล้ว "
-            "backend ต้องอ่านค่านี้เพื่อสั่งปิดจริง"
+            "คำสั่ง OFF ส่ง action='off' และ force_off=True"
         )
 
 else:
@@ -403,7 +415,42 @@ else:
 
 
 st.write("---")
+# =========================================================
+# SCHEDULE WATER PUMP (ฟีเจอร์ใหม่)
+# =========================================================
+st.markdown("### ⏰ ตั้งเวลาเปิด/ปิดปั๊มน้ำ")
+st.caption("ตั้งเวลาส่งเข้า Queue เพื่อให้ Backend แปลงเป็นคำสั่งตารางเวลา (WT) ให้ STM32")
 
+t_col1, t_col2, t_col3, t_col4 = st.columns([1, 1, 1, 1])
+
+with t_col1:
+    schedule_time = st.time_input("เวลาเปิดปั๊มน้ำ")
+
+with t_col2:
+    duration_sec = st.number_input("ระยะเวลา (วินาที)", min_value=1, max_value=999, value=120)
+
+with t_col3:
+    relay_sel = st.selectbox("Relay", [1, 2, 3, 4], index=0)
+
+with t_col4:
+    st.write("") # ดันปุ่มลงมาให้ตรงกับช่องกรอกข้อมูล
+    st.write("")
+    if st.button("เพิ่มตารางเปิดน้ำ", type="primary", use_container_width=True):
+        try:
+            hhmm = schedule_time.strftime("%H:%M")
+            schedule_cmd = make_schedule_command(hhmm, duration_sec, relay_sel)
+            
+            # ส่งเข้า Queue อย่างเดียว ห้าม Set ทับ
+            root_ref.child("command_queue").push(schedule_cmd)
+            st.toast(f"เพิ่มตาราง Relay {relay_sel} เวลา {hhmm} นาน {duration_sec} วินาทีแล้ว")
+            
+            # หน่วงเวลาเล็กน้อยให้ Firebase ประมวลผลก่อนโหลดหน้าใหม่
+            time.sleep(0.5) 
+            st.rerun()
+        except Exception as e:
+            st.error(f"เกิดข้อผิดพลาดในการบันทึกตาราง: {e}")
+
+st.write("---")
 
 # =========================================================
 # SENSOR METRICS
@@ -502,6 +549,10 @@ with s4:
 
 # แสดงข้อมูล Queue และ ACK ที่ดึงมาใหม่
 last_cmd_action = pick(last_command_sent, "action", default="N/A")
+if last_cmd_action == "N/A": 
+    # ลองดึงเวลาถ้าเป็นคำสั่ง Schedule WT
+    last_cmd_action = pick(last_command_sent, "time", default="N/A") 
+
 last_ack_event = pick(last_command_ack, "event", default="N/A")
 st.caption(f"📌 Queue pending: {pending_count} | last sent: {last_cmd_action} | ack: {last_ack_event}")
 
@@ -509,7 +560,7 @@ cmd_id = pick(cmd, "id", default="N/A")
 cmd_source = pick(cmd, "source", default="N/A")
 cmd_created = pick(cmd, "created_at_th", default="N/A")
 
-st.caption(f"คำสั่งล่าสุด: {cmd_id} | source: {cmd_source} | created: {cmd_created}")
+st.caption(f"คำสั่ง Manual ล่าสุด: {cmd_id} | source: {cmd_source} | created: {cmd_created}")
 
 relay_updated_ts = get_epoch_from_data(relay_state)
 if relay_updated_ts:
@@ -525,87 +576,4 @@ st.write("---")
 
 # =========================================================
 # CHARTS
-# =========================================================
-
-st.markdown("### กราฟข้อมูลย้อนหลัง")
-
-df = load_history_dataframe(history)
-
-if df.empty:
-    st.warning(
-        "ยังไม่มีข้อมูล history หรือรูปแบบข้อมูลยังไม่ตรง "
-        "ถ้าจะให้กราฟขึ้น ต้องมี path เช่น AIFARM01/history พร้อม timestamp"
-    )
-else:
-    graph_group = st.selectbox(
-        "เลือกกลุ่มกราฟ",
-        [
-            "อากาศและความชื้น",
-            "ดินและ pH/EC",
-            "ธาตุอาหาร NPK"
-        ]
-    )
-
-    if graph_group == "อากาศและความชื้น":
-        cols = ["air_temp", "air_humi", "soil_temp", "soil_humi"]
-    elif graph_group == "ดินและ pH/EC":
-        cols = ["soil_ec", "soil_ph"]
-    else:
-        cols = ["n", "p", "k"]
-
-    show_cols = [c for c in cols if c in df.columns and df[c].notna().any()]
-
-    if show_cols:
-        st.line_chart(df[show_cols])
-    else:
-        st.warning("มี history แต่ไม่มี key ที่ใช้วาดกราฟในกลุ่มนี้")
-
-    with st.expander("ดูตาราง history ล่าสุด"):
-        st.dataframe(df.tail(50), use_container_width=True)
-
-
-# =========================================================
-# RAW DATA DEBUG
-# =========================================================
-
-st.write("---")
-st.markdown("### Raw Data / Debug")
-
-# เพิ่ม Tabs สำหรับ Queue, Last Sent, และ ACK
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "Current",
-    "Command",
-    "Relay State",
-    "History",
-    "All Data",
-    "Queue (V9)",
-    "Last Sent",
-    "ACK"
-])
-
-with tab1:
-    st.json(current)
-
-with tab2:
-    st.json(cmd)
-
-with tab3:
-    st.json(relay_state)
-
-with tab4:
-    if isinstance(history, dict):
-        st.write(f"จำนวน record ใน history: {len(history)}")
-    st.json(history)
-
-with tab5:
-    st.json(all_data)
-
-with tab6:
-    st.write(f"จำนวน Queue ที่รอประมวลผล (Pending): **{pending_count}** รายการ")
-    st.json(command_queue)
-
-with tab7:
-    st.json(last_command_sent)
-
-with tab8:
-    st.json(last_command_ack)
+# =================
