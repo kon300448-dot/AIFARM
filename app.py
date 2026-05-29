@@ -18,6 +18,9 @@ REFRESH_MS = 2000
 OFFLINE_SEC = 90
 PUMP_MAX_SEC = 60
 
+# --- เพิ่ม Config ใหม่สำหรับ Backend V9 (Command Queue) ---
+USE_COMMAND_QUEUE = True
+
 TH_TZ = timezone(timedelta(hours=7))
 
 
@@ -261,6 +264,18 @@ cmd = all_data.get("last_command_request", {}) if isinstance(all_data, dict) els
 history = all_data.get("history", {}) if isinstance(all_data, dict) else {}
 relay_state = all_data.get("relay_state", {}) if isinstance(all_data, dict) else {}
 
+# --- เพิ่มการดึง path ใหม่สำหรับ Backend V9 ---
+command_queue = all_data.get("command_queue", {}) if isinstance(all_data, dict) else {}
+last_command_sent = all_data.get("last_command_sent", {}) if isinstance(all_data, dict) else {}
+last_command_ack = all_data.get("last_command_ack", {}) if isinstance(all_data, dict) else {}
+
+# นับจำนวนคิวที่ตกค้าง (ยังไม่ได้ process)
+pending_count = 0
+if isinstance(command_queue, dict):
+    for q_id, q_data in command_queue.items():
+        if isinstance(q_data, dict) and not q_data.get("backend_processed", False):
+            pending_count += 1
+
 db_mode = all_data.get("control_mode", "auto")
 if db_mode not in ["auto", "manual"]:
     db_mode = "auto"
@@ -350,8 +365,13 @@ if selected_mode == "manual":
     with c_btn1:
         if st.button("เปิดปั๊มน้ำ", type="primary", use_container_width=True):
             try:
-                root_ref.child("last_command_request").set(make_command("on"))
-                st.toast("ส่งคำสั่งเปิดปั๊มน้ำแล้ว")
+                command = make_command("on")
+                if USE_COMMAND_QUEUE:
+                    root_ref.child("command_queue").push(command)
+                    st.toast("เพิ่มคำสั่งเปิดปั๊มน้ำเข้าคิวแล้ว")
+                else:
+                    root_ref.child("last_command_request").set(command)
+                    st.toast("ส่งคำสั่งเปิดปั๊มน้ำแล้ว")
                 st.rerun()
             except Exception as e:
                 st.error(f"ส่งคำสั่งไม่สำเร็จ: {e}")
@@ -359,14 +379,21 @@ if selected_mode == "manual":
     with c_btn2:
         if st.button("ปิดปั๊มน้ำ", use_container_width=True):
             try:
-                root_ref.child("last_command_request").set(make_command("off"))
-                st.toast("ส่งคำสั่งปิดปั๊มน้ำแล้ว")
+                command = make_command("off")
+                if USE_COMMAND_QUEUE:
+                    root_ref.child("command_queue").push(command)
+                    st.toast("เพิ่มคำสั่งปิดปั๊มน้ำเข้าคิวแล้ว")
+                else:
+                    root_ref.child("last_command_request").set(command)
+                    st.toast("ส่งคำสั่งปิดปั๊มน้ำแล้ว")
                 st.rerun()
             except Exception as e:
                 st.error(f"ส่งคำสั่งไม่สำเร็จ: {e}")
 
     with c_btn3:
+        queue_status_text = "ใช้งาน Command Queue (Push)" if USE_COMMAND_QUEUE else "ใช้งานแบบเดิม (Set: last_command_request)"
         st.caption(
+            f"ระบบ: {queue_status_text} | "
             "คำสั่ง OFF ตอนนี้ส่ง action='off' และ force_off=True แล้ว "
             "backend ต้องอ่านค่านี้เพื่อสั่งปิดจริง"
         )
@@ -473,6 +500,11 @@ with s4:
     st.info(f"action: {pick(cmd, 'action', default='N/A')}")
     st.caption(f"duration: {pick(cmd, 'duration_sec', default='N/A')}s")
 
+# แสดงข้อมูล Queue และ ACK ที่ดึงมาใหม่
+last_cmd_action = pick(last_command_sent, "action", default="N/A")
+last_ack_event = pick(last_command_ack, "event", default="N/A")
+st.caption(f"📌 Queue pending: {pending_count} | last sent: {last_cmd_action} | ack: {last_ack_event}")
+
 cmd_id = pick(cmd, "id", default="N/A")
 cmd_source = pick(cmd, "source", default="N/A")
 cmd_created = pick(cmd, "created_at_th", default="N/A")
@@ -539,12 +571,16 @@ else:
 st.write("---")
 st.markdown("### Raw Data / Debug")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+# เพิ่ม Tabs สำหรับ Queue, Last Sent, และ ACK
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "Current",
     "Command",
     "Relay State",
     "History",
-    "All Data"
+    "All Data",
+    "Queue (V9)",
+    "Last Sent",
+    "ACK"
 ])
 
 with tab1:
@@ -563,3 +599,13 @@ with tab4:
 
 with tab5:
     st.json(all_data)
+
+with tab6:
+    st.write(f"จำนวน Queue ที่รอประมวลผล (Pending): **{pending_count}** รายการ")
+    st.json(command_queue)
+
+with tab7:
+    st.json(last_command_sent)
+
+with tab8:
+    st.json(last_command_ack)
