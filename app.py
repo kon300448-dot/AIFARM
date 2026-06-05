@@ -590,74 +590,64 @@ st.write("---")
 
 st.markdown("### 📊 แนวโน้มข้อมูลสภาพแวดล้อมย้อนหลัง")
 
-# 1. แปลงข้อมูล history จาก Firebase ให้เป็น DataFrame ด้วยฟังก์ชันที่คุณเขียนไว้
-df_history = load_history_dataframe(history)
+def load_history_dataframe(history_data):
+    if not isinstance(history_data, dict) or len(history_data) == 0:
+        return pd.DataFrame()
 
-# 2. ตรวจสอบว่ามีข้อมูลย้อนหลังส่งมาไหม
-if df_history.empty:
-    st.info("📭 ยังไม่มีข้อมูลประวัติย้อนหลังในระบบ (กรุณาตรวจสอบโครงสร้าง node 'history' ใน Firebase)")
-else:
-    # สร้าง Tabs เพื่อแยกประเภทกราฟ ให้หน้าจอดูคลีนและอ่านง่าย
-    tab_air, tab_soil, tab_npk = st.tabs([
-        "🌡️ สภาพอากาศ (Air)", 
-        "🌱 สภาพดิน (Soil)", 
-        "🧪 ธาตุอาหารในดิน (NPK)"
-    ])
-    
-    # --- Tab 1: อุณหภูมิและความชื้นอากาศ ---
-    with tab_air:
-        st.markdown("#### อุณหภูมิอากาศและความชื้นสัมพัทธ์")
-        # กรองเอาเฉพาะคอลัมน์ของอากาศที่มีอยู่ใน DataFrame จริงๆ
-        air_cols = [col for col in ["air_temp", "air_humi"] if col in df_history.columns]
-        if air_cols:
-            # st.line_chart จะเอา Index (ซึ่งคือเวลา 'time') เป็นแกน X โดยอัตโนมัติ
-            st.line_chart(df_history[air_cols])
-        else:
-            st.warning("ไม่พบตัวแปร air_temp หรือ air_humi ในฐานข้อมูลประวัติ")
+    rows = []
 
-    # --- Tab 2: อุณหภูมิ ความชื้น ดิน และ EC/pH ---
-    with tab_soil:
-        st.markdown("#### สภาพทางกายภาพของดิน")
+    # วนลูปชั้นที่ 1: เข้าถึงโฟลเดอร์วันที่ (เช่น "2026-06-05")
+    for date_key, date_folder in history_data.items():
+        if not isinstance(date_folder, dict):
+            continue
         
-        # แยกเป็น 2 ฝั่งเพราะหน่วยวัดต่างกัน (ชื้น % กับ ค่า pH/EC) กราฟจะได้ไม่เพี้ยน
-        g_col1, g_col2 = st.columns(2)
-        
-        with g_col1:
-            st.caption("📈 อุณหภูมิดิน และ ความชื้นดิน")
-            soil_phys_cols = [col for col in ["soil_temp", "soil_humi"] if col in df_history.columns]
-            if soil_phys_cols:
-                st.line_chart(df_history[soil_phys_cols])
+        # วนลูปชั้นที่ 2: เข้าถึงก้อนข้อมูลแต่ละช่วงเวลาในวันนั้น (เช่น Push ID หรือเวลา "13-43-57")
+        for record_key, item in date_folder.items():
+            if not isinstance(item, dict):
+                continue
+
+            # พยายามหาค่า Timestamp จากใน item ก่อน
+            ts = get_epoch_from_data(item)
+            dt = None
+
+            if ts:
+                dt = datetime.fromtimestamp(ts)
             else:
-                st.caption("ไม่มีข้อมูล soil_temp / soil_humi")
-                
-        with g_col2:
-            st.caption("📈 ค่าความนำไฟฟ้า (EC) และ ความเป็นกรด-ด่าง (pH)")
-            soil_chem_cols = [col for col in ["soil_ec", "soil_ph"] if col in df_history.columns]
-            if soil_chem_cols:
-                st.line_chart(df_history[soil_chem_cols])
-            else:
-                st.caption("ไม่มีข้อมูล soil_ec / soil_ph")
+                # ถ้าไม่มี Timestamp ให้ลองเอา "วันที่" มารวมกับ "ชื่อคีย์" 
+                # (เผื่อ STM32 ส่งชื่อคีย์มาเป็นเวลา เช่น "13-43-57")
+                try:
+                    time_str = str(record_key).replace("-", ":").replace("_", ":")
+                    datetime_str = f"{date_key} {time_str}"
+                    dt = pd.to_datetime(datetime_str, errors="coerce")
+                except Exception:
+                    dt = None
 
-    # --- Tab 3: ปริมาณธาตุอาหารหลัก N P K ---
-    with tab_npk:
-        st.markdown("#### ปริมาณธาตุอาหารในดิน (N, P, K)")
-        npk_cols = [col for col in ["n", "p", "k"] if col in df_history.columns]
-        if npk_cols:
-            st.line_chart(df_history[npk_cols])
-        else:
-            st.warning("ไม่พบตัวแปร n, p, k ในฐานข้อมูลประวัติ")
+            # ถ้าแปลงเป็นเวลาไม่ได้เลย ให้ข้ามข้อมูลก้อนนี้ไป
+            if dt is None or pd.isna(dt):
+                continue
 
-    # --- ฟีเจอร์เสริม: เปิดดูตารางข้อมูลดิบ และปุ่มดาวน์โหลด CSV ---
-    st.write("") # เว้นช่องไฟ
-    with st.expander("📥 ดูตารางข้อมูลดิบทั้งหมด / ดาวน์โหลดไฟล์แผ่นงาน (CSV)"):
-        st.dataframe(df_history, use_container_width=True)
-        
-        # แปลง DataFrame เป็น CSV สำหรับดาวน์โหลดไปทำรายงานส่งอาจารย์
-        csv_data = df_history.to_csv().encode('utf-8')
-        st.download_button(
-            label="💾 ดาวน์โหลดข้อมูลย้อนหลังเป็นไฟล์ .CSV",
-            data=csv_data,
-            file_name=f"AIdi_greenhouse_history_{datetime.now(TH_TZ).strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+            # ดึงข้อมูลเซนเซอร์ออกมา (ถ้าชื่อ Key ใน Firebase เป็นแบบอื่น ให้เติมชื่อลงไปใน "..." ได้เลย)
+            rows.append({
+                "time": dt,
+                "air_temp": to_float(pick(item, "air_temp", "airTemp", "Air_Temp", "air")),
+                "air_humi": to_float(pick(item, "air_humi", "air_humid", "air_humidity")),
+                "soil_temp": to_float(pick(item, "soil_temp", "soilTemp", "Soil_Temp")),
+                "soil_humi": to_float(pick(item, "soil_humi", "soil_humid", "soil_moisture", "Soil_Moisture")),
+                "soil_ec": to_float(pick(item, "soil_ec", "EC", "ec")),
+                "soil_ph": to_float(pick(item, "soil_ph", "ph", "pH")),
+                "n": to_float(pick(item, "n", "N", "soil_n")),
+                "p": to_float(pick(item, "p", "P", "soil_p")),
+                "k": to_float(pick(item, "k", "K", "soil_k")),
+            })
+
+    df = pd.DataFrame(rows)
+
+    if df.empty:
+        return df
+
+    # เรียงลำดับตามเวลา และตัดข้อมูลที่ซ้ำซ้อนทิ้ง
+    df = df.sort_values("time")
+    df = df.drop_duplicates(subset=["time"], keep="last")
+    df = df.set_index("time")
+
+    return df
