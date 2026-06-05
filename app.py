@@ -192,49 +192,61 @@ def load_history_dataframe(history_data):
 
     rows = []
 
-    for key, item in history_data.items():
-        if not isinstance(item, dict):
+    # วนลูปชั้นที่ 1: เข้าถึงโฟลเดอร์วันที่ (เช่น "2026-06-05")
+    for date_key, date_folder in history_data.items():
+        if not isinstance(date_folder, dict):
             continue
+        
+        # วนลูปชั้นที่ 2: เข้าถึงก้อนข้อมูลแต่ละช่วงเวลาในวันนั้น (เช่น Push ID หรือเวลา "13-43-57")
+        for record_key, item in date_folder.items():
+            if not isinstance(item, dict):
+                continue
 
-        ts = get_epoch_from_data(item)
+            # พยายามหาค่า Timestamp จากใน item ก่อน
+            ts = get_epoch_from_data(item)
+            dt = None
 
-        dt = None
-        if ts:
-            dt = datetime.fromtimestamp(ts)
-        else:
-            try:
-                safe_key = str(key).replace("_", " ")
-                dt = pd.to_datetime(safe_key, errors="coerce")
-            except Exception:
-                dt = None
+            if ts:
+                dt = datetime.fromtimestamp(ts)
+            else:
+                # ถ้าไม่มี Timestamp ให้ลองเอา "วันที่" มารวมกับ "ชื่อคีย์" 
+                # (เผื่อ STM32 ส่งชื่อคีย์มาเป็นเวลา เช่น "13-43-57")
+                try:
+                    time_str = str(record_key).replace("-", ":").replace("_", ":")
+                    datetime_str = f"{date_key} {time_str}"
+                    dt = pd.to_datetime(datetime_str, errors="coerce")
+                except Exception:
+                    dt = None
 
-        if dt is None or pd.isna(dt):
-            continue
+            # ถ้าแปลงเป็นเวลาไม่ได้เลย ให้ข้ามข้อมูลก้อนนี้ไป
+            if dt is None or pd.isna(dt):
+                continue
 
-        rows.append({
-            "time": dt,
-            "air_temp": to_float(pick(item, "air_temp", "airTemp")),
-            "air_humi": to_float(pick(item, "air_humi", "air_humid", "air_humidity")),
-            "soil_temp": to_float(pick(item, "soil_temp", "soilTemp")),
-            "soil_humi": to_float(pick(item, "soil_humi", "soil_humid", "soil_moisture")),
-            "soil_ec": to_float(pick(item, "soil_ec", "EC", "ec")),
-            "soil_ph": to_float(pick(item, "soil_ph", "ph", "pH")),
-            "n": to_float(pick(item, "n", "N", "soil_n")),
-            "p": to_float(pick(item, "p", "P", "soil_p")),
-            "k": to_float(pick(item, "k", "K", "soil_k")),
-        })
+            # ดึงข้อมูลเซนเซอร์ออกมา (ถ้าชื่อ Key ใน Firebase เป็นแบบอื่น ให้เติมชื่อลงไปใน "..." ได้เลย)
+            rows.append({
+                "time": dt,
+                "air_temp": to_float(pick(item, "air_temp", "airTemp", "Air_Temp", "air")),
+                "air_humi": to_float(pick(item, "air_humi", "air_humid", "air_humidity")),
+                "soil_temp": to_float(pick(item, "soil_temp", "soilTemp", "Soil_Temp")),
+                "soil_humi": to_float(pick(item, "soil_humi", "soil_humid", "soil_moisture", "Soil_Moisture")),
+                "soil_ec": to_float(pick(item, "soil_ec", "EC", "ec")),
+                "soil_ph": to_float(pick(item, "soil_ph", "ph", "pH")),
+                "n": to_float(pick(item, "n", "N", "soil_n")),
+                "p": to_float(pick(item, "p", "P", "soil_p")),
+                "k": to_float(pick(item, "k", "K", "soil_k")),
+            })
 
     df = pd.DataFrame(rows)
 
     if df.empty:
         return df
 
+    # เรียงลำดับตามเวลา และตัดข้อมูลที่ซ้ำซ้อนทิ้ง
     df = df.sort_values("time")
     df = df.drop_duplicates(subset=["time"], keep="last")
     df = df.set_index("time")
 
     return df
-
 
 def status_badge(label, value):
     value_str = str(value)
