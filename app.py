@@ -5,7 +5,7 @@ from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 import time
 from datetime import datetime, timezone, timedelta
-
+import re
 
 # =========================================================
 # CONFIG
@@ -262,10 +262,6 @@ def backend_status_box(cmd):
         st.caption(f"status: {status}")
 
 
-# =========================================================
-# READ FIREBASE
-# =========================================================
-
 try:
     all_data = root_ref.get() or {}
 except Exception as e:
@@ -274,7 +270,17 @@ except Exception as e:
 
 current = all_data.get("current", {}) if isinstance(all_data, dict) else {}
 cmd = all_data.get("last_command_request", {}) if isinstance(all_data, dict) else {}
-history = all_data.get("history", {}) if isinstance(all_data, dict) else {}
+
+# ---------------------------------------------------------
+# [แก้ไขใหม่] กวาดหา Key ที่เป็นรูปแบบวันที่ (เช่น 2026-06-05) มาทำเป็น history
+# ---------------------------------------------------------
+history = {}
+if isinstance(all_data, dict):
+    for key, val in all_data.items():
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", str(key)):
+            history[key] = val
+# ---------------------------------------------------------
+
 relay_state = all_data.get("relay_state", {}) if isinstance(all_data, dict) else {}
 
 # ดึง path Queue สำหรับ Backend V9
