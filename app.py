@@ -75,11 +75,21 @@ def pick(data, *keys, default="--"):
 
 
 def to_float(value):
+    if value is None or str(value).strip() == "" or value == "--":
+        return None
     try:
+        # พยายามแปลงเป็นทศนิยมตรงๆ ก่อน
         return float(value)
     except Exception:
+        # กรณีที่บอร์ด STM32 ส่งมาเป็นสตริงติดตัวอักษร (เช่น "41.8C", "41.0%") 
+        # ให้ใช้ Regex ดึงเฉพาะตัวเลขออกมา
+        try:
+            match = re.search(r"[-+]?\d*\.\d+|\d+", str(value))
+            if match:
+                return float(match.group())
+        except:
+            pass
         return None
-
 
 def fmt(value, unit="", digits=1):
     if value == "--" or value is None:
@@ -197,20 +207,26 @@ def load_history_dataframe(history_data):
         if not isinstance(date_folder, dict):
             continue
         
-        # วนลูปชั้นที่ 2: เข้าถึงก้อนข้อมูลแต่ละช่วงเวลาในวันนั้น (เช่น Push ID หรือเวลา "13-43-57")
+        # วนลูปชั้นที่ 2: เข้าถึงก้อนข้อมูลแต่ละช่วงเวลาในวันนั้น
         for record_key, item in date_folder.items():
             if not isinstance(item, dict):
                 continue
 
-            # พยายามหาค่า Timestamp จากใน item ก่อน
-            ts = get_epoch_from_data(item)
-            dt = None
+            # กางข้อมูลที่อาจจะซ้อนกันอยู่ (เช่น ซ้อนใน item["sensors"]["air_temp"]) ออกมาให้อยู่ชั้นเดียวกัน
+            flat_item = {}
+            for k, v in item.items():
+                if isinstance(v, dict):
+                    for sub_k, sub_v in v.items():
+                        flat_item[sub_k] = sub_v
+                else:
+                    flat_item[k] = v
 
+            # ประกอบร่างหาเวลา Timestamp
+            ts = get_epoch_from_data(flat_item)
+            dt = None
             if ts:
                 dt = datetime.fromtimestamp(ts)
             else:
-                # ถ้าไม่มี Timestamp ให้ลองเอา "วันที่" มารวมกับ "ชื่อคีย์" 
-                # (เผื่อ STM32 ส่งชื่อคีย์มาเป็นเวลา เช่น "13-43-57")
                 try:
                     time_str = str(record_key).replace("-", ":").replace("_", ":")
                     datetime_str = f"{date_key} {time_str}"
@@ -218,22 +234,21 @@ def load_history_dataframe(history_data):
                 except Exception:
                     dt = None
 
-            # ถ้าแปลงเป็นเวลาไม่ได้เลย ให้ข้ามข้อมูลก้อนนี้ไป
             if dt is None or pd.isna(dt):
                 continue
 
-            # ดึงข้อมูลเซนเซอร์ออกมา (ถ้าชื่อ Key ใน Firebase เป็นแบบอื่น ให้เติมชื่อลงไปใน "..." ได้เลย)
+            # ดึงข้อมูลเซนเซอร์ (เพิ่ม Key หลากหลายรูปแบบดักไว้ เผื่อบอร์ดส่งมาชื่อไม่ตรงกัน 100%)
             rows.append({
                 "time": dt,
-                "air_temp": to_float(pick(item, "air_temp", "airTemp", "Air_Temp", "air")),
-                "air_humi": to_float(pick(item, "air_humi", "air_humid", "air_humidity")),
-                "soil_temp": to_float(pick(item, "soil_temp", "soilTemp", "Soil_Temp")),
-                "soil_humi": to_float(pick(item, "soil_humi", "soil_humid", "soil_moisture", "Soil_Moisture")),
-                "soil_ec": to_float(pick(item, "soil_ec", "EC", "ec")),
-                "soil_ph": to_float(pick(item, "soil_ph", "ph", "pH")),
-                "n": to_float(pick(item, "n", "N", "soil_n")),
-                "p": to_float(pick(item, "p", "P", "soil_p")),
-                "k": to_float(pick(item, "k", "K", "soil_k")),
+                "air_temp": to_float(pick(flat_item, "air_temp", "airTemp", "Air_Temp", "air", "temp", "Temperature")),
+                "air_humi": to_float(pick(flat_item, "air_humi", "air_humid", "air_humidity", "Air_Humi", "humid", "Humidity")),
+                "soil_temp": to_float(pick(flat_item, "soil_temp", "soilTemp", "Soil_Temp")),
+                "soil_humi": to_float(pick(flat_item, "soil_humi", "soil_humid", "soil_moisture", "Soil_Moisture")),
+                "soil_ec": to_float(pick(flat_item, "soil_ec", "EC", "ec")),
+                "soil_ph": to_float(pick(flat_item, "soil_ph", "ph", "pH")),
+                "n": to_float(pick(flat_item, "n", "N", "soil_n")),
+                "p": to_float(pick(flat_item, "p", "P", "soil_p")),
+                "k": to_float(pick(flat_item, "k", "K", "soil_k")),
             })
 
     df = pd.DataFrame(rows)
