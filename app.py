@@ -14,7 +14,7 @@ import re
 DATABASE_URL = "https://aifarm-cd315-default-rtdb.asia-southeast1.firebasedatabase.app/"
 DEVICE_PATH = "AIFARM01"
 
-REFRESH_MS = 2000
+REFRESH_MS = 3000000
 OFFLINE_SEC = 90
 PUMP_MAX_SEC = 60
 
